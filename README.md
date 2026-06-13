@@ -1,6 +1,8 @@
-# 面试诊断 Agent
+# OfferPilot
 
 基于 Harness 工程架构的 AI Agent 面试辅导系统。纯手写 Agent Loop，不依赖 LangChain / LangGraph。
+
+**GitHub**: [https://github.com/ranxi2001/OfferPilot](https://github.com/ranxi2001/OfferPilot)
 
 ## 项目定位
 
@@ -96,7 +98,7 @@ knowledge/           # 面试题知识库（Markdown）
 
 ## 设计文档
 
-详细设计见 [zero2Agent/final-project](https://github.com/user/zero2Agent/tree/main/final-project)，共 12 篇：
+详细设计见 [zero2Agent/final-project](https://github.com/ranxi2001/zero2Agent/tree/main/final-project)，共 12 篇：
 
 1. PRD → 2. 系统架构 → 3. Query Engine → 4. Tools & Skills → 5. 知识库 → 6. Context & Memory → 7. Permission & Session → 8. Hook & Command → 9. Sub-agent → 10. 语音输入 → 11. 部署演示 → 12. Web UI
 
