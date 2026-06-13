@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/offerpilot-banner.png" alt="OfferPilot - AI Interview Diagnosis Agent" width="100%" />
+<img src="./assets/offerpilot-banner.jpg" alt="OfferPilot - AI Interview Diagnosis Agent" width="100%" />
 
 **纯手写 Agent Loop，不依赖 LangChain / LangGraph，完整实现 10 层 Harness 工程架构**
 
