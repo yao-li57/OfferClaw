@@ -1,0 +1,13 @@
+node_modules/
+dist/
+data/
+uploads/
+.env
+.packs/
+.pack.conf
+*.bundle
+web/.next/
+web/node_modules/
+
+# local-dev skill (contains credentials, not for git)
+.claude/skills/local-dev/
