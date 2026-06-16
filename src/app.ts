@@ -18,6 +18,8 @@ import {
   quitCommand,
   resetCommand,
 } from './command/index.js';
+import { openDatabase, initSchema } from './db/index.js';
+import { resolve } from 'node:path';
 
 const SYSTEM_PROMPT = `你是 OfferPilot，一个全链路求职辅导 Agent，专注于 AI Agent / LLM 工程方向。
 
@@ -65,6 +67,16 @@ export interface AppOptions {
 export function createApp(opts?: AppOptions) {
   const providers = buildProviders();
 
+  // Open SQLite DB for persistent memory (non-fatal if unavailable)
+  let db: ReturnType<typeof openDatabase> | undefined;
+  try {
+    const dbPath = resolve(process.env.DB_PATH ?? 'data/agent.db');
+    db = openDatabase(dbPath);
+    initSchema(db);
+  } catch {
+    // silently fall back to in-memory store
+  }
+
   const queryEngine = new QueryEngine({
     providers,
     retry: { maxRetries: 3 },
@@ -73,8 +85,8 @@ export function createApp(opts?: AppOptions) {
   const toolRegistry = createToolRegistry();
   const permissionGate = new PermissionGate();
   const contextManager = new ContextManager();
-  const sessionManager = new SessionManager();
-  const memoryStore = new MemoryStore();
+  const sessionManager = new SessionManager(db);
+  const memoryStore = new MemoryStore(db);
 
   const hookPipeline = new HookPipeline();
   hookPipeline.register(inputSanitizerHook);
@@ -109,7 +121,10 @@ export function createApp(opts?: AppOptions) {
 function buildProviders() {
   const configs = [];
 
-  if (process.env.ANTHROPIC_API_KEY) {
+  // 占位字符串（如 sk-ant-...）当作未配置
+  const realKey = (k: string | undefined) => (k && !k.endsWith('...') ? k : undefined);
+
+  if (realKey(process.env.ANTHROPIC_API_KEY)) {
     configs.push({
       provider: new ClaudeProvider(),
       models: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-opus-4-20250514'],
@@ -117,7 +132,7 @@ function buildProviders() {
     });
   }
 
-  if (process.env.OPENAI_API_KEY) {
+  if (realKey(process.env.OPENAI_API_KEY)) {
     configs.push({
       provider: new OpenAIProvider(),
       models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
@@ -125,11 +140,27 @@ function buildProviders() {
     });
   }
 
-  if (process.env.DEEPSEEK_API_KEY) {
+  if (realKey(process.env.DEEPSEEK_API_KEY)) {
     configs.push({
       provider: new DeepSeekProvider(),
       models: ['deepseek-chat', 'deepseek-coder'],
       defaultModel: 'deepseek-chat',
+    });
+  }
+
+  // Generic OpenAI-compatible endpoint (qgenie / vLLM / ollama / 中转站)
+  // 需要 LLM_BASE_URL + LLM_API_KEY + LLM_MODEL 三件套都设置才会启用；
+  // 配齐则置顶，成为默认 provider（其它 provider 仍可按模型名选用）
+  if (realKey(process.env.LLM_API_KEY) && process.env.LLM_BASE_URL && process.env.LLM_MODEL) {
+    const model = process.env.LLM_MODEL;
+    configs.unshift({
+      provider: new OpenAIProvider({
+        apiKey: process.env.LLM_API_KEY,
+        baseURL: process.env.LLM_BASE_URL,
+        name: process.env.LLM_PROVIDER_NAME ?? 'qgenie',
+      }),
+      models: [model],
+      defaultModel: model,
     });
   }
 

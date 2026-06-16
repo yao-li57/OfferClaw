@@ -1,4 +1,22 @@
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { ToolDefinition } from '../types.js';
+
+const DB_PATH = resolve('data/agent.db');
+
+// Fallback behavioral/project questions (not in knowledge base)
+const NON_TECH = [
+  { q: '你做过的最复杂的 Agent 项目是什么？遇到了什么核心难点？', dim: 'project' },
+  { q: '你在项目中是如何做技术选型的？举一个关键决策的例子', dim: 'project' },
+  { q: '说一个你优化系统性能的案例，量化结果是什么？', dim: 'project' },
+  { q: '你如何衡量 Agent 的输出质量？用过什么评测方案？', dim: 'project' },
+  { q: '说一个你和团队意见不一致的例子，最终怎么解决的？', dim: 'behavioral' },
+  { q: '你是怎么在紧急 deadline 下保证交付质量的？', dim: 'behavioral' },
+  { q: '你是怎么快速学习一个新技术领域的？举个最近的例子', dim: 'behavioral' },
+];
+
+// knowledge.dimension → mock-interview "technical" category
+const TECH_DIMS = ['architecture', 'engineering', 'model', 'rag', 'multi-agent', 'evaluation', 'full-stack'];
 
 export const mockInterview: ToolDefinition = {
   schema: {
@@ -25,7 +43,12 @@ export const mockInterview: ToolDefinition = {
   },
   riskLevel: 'low',
   async execute(input) {
-    const { jdText, resumeText, dimension = 'mixed', difficulty = 'medium', count = 5 } = input as {
+    const {
+      jdText,
+      dimension = 'mixed',
+      difficulty = 'medium',
+      count = 5,
+    } = input as {
       jdText?: string;
       resumeText?: string;
       dimension?: string;
@@ -33,69 +56,88 @@ export const mockInterview: ToolDefinition = {
       count?: number;
     };
 
-    const technicalQuestions = [
-      { q: '请介绍一下 Agent 的 ReAct 循环，以及在工程实现中需要注意什么？', dim: 'technical', diff: 'medium' },
-      { q: '如何设计一个支持多 Provider 的 LLM 调用层？说说你的接口抽象思路', dim: 'technical', diff: 'hard' },
-      { q: 'RAG 系统中，Chunk 策略和 Retrieval 策略分别有哪些选择？trade-off 是什么？', dim: 'technical', diff: 'hard' },
-      { q: 'Tool Calling 的流式处理要注意什么？如果 tool input 是增量送达的怎么处理？', dim: 'technical', diff: 'medium' },
-      { q: '什么是 Agent Harness？和 LangChain 的本质区别在哪里？', dim: 'technical', diff: 'medium' },
-      { q: '如何解决 Agent 循环中的 Context Window 膨胀问题？', dim: 'technical', diff: 'hard' },
-      { q: 'Embedding 模型选型时你会考虑哪些因素？', dim: 'technical', diff: 'easy' },
-      { q: 'System Prompt 的设计有什么讲究？怎么减少 prompt injection 风险？', dim: 'technical', diff: 'medium' },
-    ];
+    const techCount = dimension === 'behavioral' ? 0
+      : dimension === 'project' ? 0
+      : dimension === 'technical' ? count
+      : Math.ceil(count * 0.6); // mixed: 60% technical
 
-    const projectQuestions = [
-      { q: '你做过的最复杂的 Agent 项目是什么？遇到了什么核心难点？', dim: 'project', diff: 'medium' },
-      { q: '你在项目中是如何做技术选型的？举一个关键决策的例子', dim: 'project', diff: 'medium' },
-      { q: '说一个你优化系统性能的案例，量化结果是什么？', dim: 'project', diff: 'medium' },
-      { q: '你如何衡量 Agent 的输出质量？用过什么评测方案？', dim: 'project', diff: 'hard' },
-      { q: '项目中遇到过线上事故吗？你是怎么处理和复盘的？', dim: 'project', diff: 'medium' },
-    ];
+    const otherCount = count - techCount;
 
-    const behavioralQuestions = [
-      { q: '说一个你和团队意见不一致的例子，最终怎么解决的？', dim: 'behavioral', diff: 'medium' },
-      { q: '你是怎么在紧急 deadline 下保证交付质量的？', dim: 'behavioral', diff: 'easy' },
-      { q: '你是怎么快速学习一个新技术领域的？举个最近的例子', dim: 'behavioral', diff: 'easy' },
-      { q: '你如何评估自己的技术成长？最近半年最大的提升是什么？', dim: 'behavioral', diff: 'easy' },
-    ];
+    const techQuestions: Array<{ question: string; dimension: string; difficulty: string }> = [];
 
-    let pool = [...technicalQuestions, ...projectQuestions, ...behavioralQuestions];
+    // Pull technical questions from knowledge DB
+    if (techCount > 0 && existsSync(DB_PATH)) {
+      try {
+        const { openDatabase } = await import('../../db/database.js');
+        const db = openDatabase(DB_PATH);
 
-    // Filter by dimension
-    if (dimension !== 'mixed') {
-      pool = pool.filter((q) => q.dim === dimension);
+        // Filter dims if JD hints at specific area
+        let dimsFilter = TECH_DIMS;
+        if (jdText) {
+          const lower = jdText.toLowerCase();
+          const hinted = TECH_DIMS.filter((d) => lower.includes(d.replace('-', ' ')) || lower.includes(d));
+          if (hinted.length > 0) dimsFilter = hinted;
+        }
+
+        const placeholders = dimsFilter.map(() => '?').join(',');
+        const rows = db
+          .prepare(
+            `SELECT dimension, question, expert_answer
+             FROM knowledge
+             WHERE question IS NOT NULL
+               AND dimension IN (${placeholders})
+             ORDER BY RANDOM()
+             LIMIT ?`,
+          )
+          .all(...dimsFilter, techCount + 5) as Array<{
+            dimension: string;
+            question: string;
+            expert_answer: string | null;
+          }>;
+        db.close();
+
+        for (const r of rows.slice(0, techCount)) {
+          // Estimate difficulty by expert_answer length
+          const len = r.expert_answer?.length ?? 0;
+          const diff = len < 200 ? 'easy' : len < 500 ? 'medium' : 'hard';
+
+          // Filter by requested difficulty
+          if (difficulty === 'easy' && diff === 'hard') continue;
+          if (difficulty === 'hard' && diff === 'easy') continue;
+
+          techQuestions.push({ question: r.question, dimension: r.dimension, difficulty: diff });
+        }
+      } catch {}
     }
 
-    // Filter by difficulty
-    if (difficulty === 'easy') pool = pool.filter((q) => q.diff !== 'hard');
-    if (difficulty === 'hard') pool = pool.filter((q) => q.diff !== 'easy');
+    // Fill remaining with non-tech questions
+    const otherPool = NON_TECH.filter((q) =>
+      dimension === 'mixed' || q.dim === dimension,
+    ).sort(() => Math.random() - 0.5);
 
-    // Select questions
-    const selected = pool.sort(() => Math.random() - 0.5).slice(0, count);
+    const otherQuestions = otherPool.slice(0, Math.max(otherCount, count - techQuestions.length));
 
-    // Add JD-specific questions if provided
-    if (jdText && selected.length < count) {
-      if (jdText.toLowerCase().includes('agent')) {
-        selected.push({ q: '基于你对这个岗位的理解，你觉得最核心的技术挑战是什么？', dim: 'project', diff: 'hard' });
-      }
-    }
+    const allQuestions = [
+      ...techQuestions,
+      ...otherQuestions.map((q) => ({ question: q.q, dimension: q.dim, difficulty: 'medium' })),
+    ].slice(0, count);
 
     return {
       success: true,
       output: JSON.stringify({
         dimension,
         difficulty,
-        totalQuestions: selected.length,
-        questions: selected.map((q, i) => ({
+        totalQuestions: allQuestions.length,
+        questions: allQuestions.map((q, i) => ({
           index: i + 1,
-          question: q.q,
-          dimension: q.dim,
-          difficulty: q.diff,
+          question: q.question,
+          dimension: q.dimension,
+          difficulty: q.difficulty,
         })),
         tips: [
-          '每道题用 STAR 法则组织回答（Situation → Task → Action → Result）',
-          '技术题先给结论（1句话），再展开细节',
-          '主动提到踩坑经验和量化结果',
+          '技术题先给结论（1句话），再展开细节，最后说实战经验',
+          '每道题用"是什么 → 为什么 → 怎么做 → 踩过什么坑"四段式',
+          '主动提量化结果（数字、百分比、规模）',
         ],
       }),
     };

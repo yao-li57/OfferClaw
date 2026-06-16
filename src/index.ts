@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Command } from 'commander';
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';

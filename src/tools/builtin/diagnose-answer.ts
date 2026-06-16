@@ -19,7 +19,7 @@ export const diagnoseAnswer: ToolDefinition = {
     },
   },
   riskLevel: 'low',
-  async execute(input) {
+  async execute(input, ctx) {
     const { question, answer, dimension } = input as {
       question: string;
       answer: string;
@@ -58,22 +58,38 @@ export const diagnoseAnswer: ToolDefinition = {
     if (!hasStructure) suggestions.unshift('使用 1/2/3 分点结构组织回答');
     if (!hasExample) suggestions.unshift('加入一个具体的项目经历或技术细节');
 
+    const result = {
+      question,
+      dimension: dimension ?? 'auto-detect',
+      score: { overall: score, max: 10 },
+      breakdown: {
+        technicalDepth: hasTechnicalDepth ? 7 : 4,
+        structure: hasStructure ? 8 : 4,
+        practicalExperience: hasExample ? 7 : 3,
+        completeness: Math.min(Math.floor(answerLen / 50), 8),
+      },
+      gaps,
+      suggestions: suggestions.slice(0, 4),
+      answerLength: answerLen,
+    };
+
+    // Upsert: remove any previous entry for this exact question, then write the latest score
+    if (ctx.memoryStore) {
+      const questionKey = `题目: ${question.slice(0, 80)}`;
+      ctx.memoryStore.removeByContent(questionKey);
+
+      const memType = score < 6 ? 'weakness' : score >= 8 ? 'strength' : 'context';
+      ctx.memoryStore.add({
+        sessionId: 'global',
+        type: memType,
+        content: `维度: ${dimension ?? 'unknown'} | 得分: ${score}/10 | 题目: ${question.slice(0, 80)}`,
+        importance: memType === 'weakness' ? 0.9 : 0.7,
+      });
+    }
+
     return {
       success: true,
-      output: JSON.stringify({
-        question,
-        dimension: dimension ?? 'auto-detect',
-        score: { overall: score, max: 10 },
-        breakdown: {
-          technicalDepth: hasTechnicalDepth ? 7 : 4,
-          structure: hasStructure ? 8 : 4,
-          practicalExperience: hasExample ? 7 : 3,
-          completeness: Math.min(Math.floor(answerLen / 50), 8),
-        },
-        gaps,
-        suggestions: suggestions.slice(0, 4),
-        answerLength: answerLen,
-      }),
+      output: JSON.stringify(result),
     };
   },
 };

@@ -1,1 +1,1 @@
-export { AgentLoop, type AgentConfig } from './loop.js';
+export { AgentLoop, type AgentConfig, type RunOptions } from './loop.js';

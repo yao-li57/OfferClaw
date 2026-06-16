@@ -22,6 +22,13 @@ export interface AgentConfig {
   onToolResult?: (name: string, result: string) => void;
 }
 
+export interface RunOptions {
+  model?: string;
+  onTextDelta?: (text: string) => void;
+  onToolCall?: (name: string, input: Record<string, unknown>) => void;
+  onToolResult?: (name: string, result: string) => void;
+}
+
 export class AgentLoop {
   private config: AgentConfig;
   private maxIterations: number;
@@ -31,8 +38,12 @@ export class AgentLoop {
     this.maxIterations = config.maxIterations ?? 10;
   }
 
-  async run(sessionId: string, userMessage: string): Promise<string> {
+  async run(sessionId: string, userMessage: string, opts?: RunOptions): Promise<string> {
     const { queryEngine, toolRegistry, contextManager, sessionManager, memoryStore } = this.config;
+
+    const onTextDelta = opts?.onTextDelta ?? this.config.onTextDelta;
+    const onToolCall = opts?.onToolCall ?? this.config.onToolCall;
+    const onToolResult = opts?.onToolResult ?? this.config.onToolResult;
 
     const session = sessionManager.get(sessionId);
     if (!session) throw new Error(`Session ${sessionId} not found`);
@@ -44,8 +55,10 @@ export class AgentLoop {
     sessionManager.addMessage(sessionId, { role: 'user', content: userMessage });
 
     const memories = memoryStore.query({ sessionId, limit: 5 });
-    if (memories.length > 0) {
-      const memoryText = memories.map((m) => `- [${m.type}] ${m.content}`).join('\n');
+    const weaknesses = memoryStore.query({ type: 'weakness', limit: 5 });
+    const allMemories = [...weaknesses, ...memories].slice(0, 8);
+    if (allMemories.length > 0) {
+      const memoryText = allMemories.map((m) => `- [${m.type}] ${m.content}`).join('\n');
       contextManager.setLayer('memory', `User context:\n${memoryText}`);
     }
 
@@ -58,11 +71,11 @@ export class AgentLoop {
       messages = compressed.messages;
 
       const params: QueryParams = {
-        model: this.config.defaultModel,
+        model: opts?.model ?? this.config.defaultModel,
         messages,
         tools: toolRegistry.listSchemas(),
         systemPrompt,
-        onTextDelta: this.config.onTextDelta,
+        onTextDelta,
       };
 
       const response: ParsedResponse = await queryEngine.query(params);
@@ -83,7 +96,7 @@ export class AgentLoop {
         messages.push(assistantMsg);
 
         for (const toolCall of response.toolCalls) {
-          const result = await this.executeTool(toolCall, sessionId);
+      const result = await this.executeTool(toolCall, sessionId, { onToolCall, onToolResult, memoryStore });
           const toolMsg: Message = {
             role: 'tool',
             toolCallId: toolCall.id,
@@ -98,7 +111,11 @@ export class AgentLoop {
     return finalText;
   }
 
-  private async executeTool(toolCall: ToolCall, sessionId: string): Promise<string> {
+  private async executeTool(
+    toolCall: ToolCall,
+    sessionId: string,
+    handlers?: Pick<RunOptions, 'onToolCall' | 'onToolResult'> & { memoryStore?: import('../memory/store.js').MemoryStore },
+  ): Promise<string> {
     const { toolRegistry, permissionGate, hookPipeline } = this.config;
 
     const tool = toolRegistry.get(toolCall.name);
@@ -124,9 +141,9 @@ export class AgentLoop {
       input = preResult.input;
     }
 
-    this.config.onToolCall?.(toolCall.name, input);
+    handlers?.onToolCall?.(toolCall.name, input);
 
-    let result = await toolRegistry.execute(toolCall.name, input, { sessionId });
+    let result = await toolRegistry.execute(toolCall.name, input, { sessionId, memoryStore: handlers?.memoryStore });
 
     // Run post-tool hooks
     if (hookPipeline) {
@@ -147,7 +164,7 @@ export class AgentLoop {
       input,
     });
 
-    this.config.onToolResult?.(toolCall.name, result.output);
+    handlers?.onToolResult?.(toolCall.name, result.output);
 
     return result.output;
   }

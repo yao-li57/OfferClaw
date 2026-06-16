@@ -3,6 +3,9 @@ dist/
 data/
 uploads/
 .env
+.env.local
+web/.env.local
+*.tsbuildinfo
 .packs/
 .pack.conf
 *.bundle

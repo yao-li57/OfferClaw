@@ -19,37 +19,99 @@ export const sessionReport: ToolDefinition = {
   },
   riskLevel: 'low',
   async execute(input, ctx) {
-    const { format = 'detailed' } = input as {
-      sessionId: string;
-      format?: string;
+    const { format = 'detailed' } = input as { sessionId: string; format?: string };
+
+    const memoryStore = ctx.memoryStore;
+
+    // Read all weakness / strength entries across sessions
+    const weaknesses = memoryStore
+      ? memoryStore.query({ type: 'weakness', limit: 50 })
+      : [];
+    const strengths = memoryStore
+      ? memoryStore.query({ type: 'strength', limit: 20 })
+      : [];
+
+    // Parse dimension from "维度: X | 得分: Y/10 | 题目: Z"
+    const parseDim = (content: string) => {
+      const m = content.match(/维度:\s*(\S+)/);
+      return m?.[1] ?? 'unknown';
+    };
+    const parseScore = (content: string): number => {
+      const m = content.match(/得分:\s*(\d+)/);
+      return m ? parseInt(m[1], 10) : 5;
     };
 
-    // Generate a mock report based on session context
+    // Aggregate by dimension
+    const dimScores: Record<string, number[]> = {};
+    for (const entry of [...weaknesses, ...strengths]) {
+      const dim = parseDim(entry.content);
+      const score = parseScore(entry.content);
+      if (!dimScores[dim]) dimScores[dim] = [];
+      dimScores[dim].push(score);
+    }
+
+    const avgByDim = Object.entries(dimScores).map(([dim, scores]) => ({
+      dim,
+      avg: scores.reduce((a, b) => a + b, 0) / scores.length,
+      count: scores.length,
+    }));
+
+    avgByDim.sort((a, b) => a.avg - b.avg);
+
+    const weakDimensions = avgByDim.filter((d) => d.avg < 6).map((d) => d.dim);
+    const strongDimensions = avgByDim.filter((d) => d.avg >= 7).map((d) => d.dim);
+    const totalQuestions = weaknesses.length + strengths.length;
+    const allScores = [...weaknesses, ...strengths].map((e) => parseScore(e.content));
+    const averageScore = allScores.length > 0
+      ? Math.round((allScores.reduce((a, b) => a + b, 0) / allScores.length) * 10) / 10
+      : 0;
+
+    // Build diagnosis history list
+    const recentEntries = [...weaknesses, ...strengths]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 10)
+      .map((e) => ({ dimension: parseDim(e.content), score: parseScore(e.content), type: e.type }));
+
+    // Generate next-steps based on weak dims
+    const nextSteps: string[] = [];
+    if (weakDimensions.length > 0) {
+      nextSteps.push(`重点练习薄弱维度：${weakDimensions.join('、')}`);
+    }
+    nextSteps.push('每道题尝试用"定义 → 工程细节 → 踩坑经验"三段式结构回答');
+    nextSteps.push('下次会话前复习本次诊断中的差距点');
+
+    const overallAssessment = totalQuestions === 0
+      ? '暂无诊断记录，请先提交面试题回答进行诊断。'
+      : weakDimensions.length === 0
+      ? `综合表现良好！平均得分 ${averageScore}/10。继续保持，可以挑战更深层的工程细节问题。`
+      : `共完成 ${totalQuestions} 道题，平均得分 ${averageScore}/10。${
+          strongDimensions.length > 0 ? `优势维度：${strongDimensions.join('、')}。` : ''
+        }薄弱维度：${weakDimensions.join('、')}，建议重点加强。`;
+
     const report = {
       sessionId: ctx.sessionId,
       format,
       summary: {
-        totalQuestions: 3,
-        averageScore: 6.2,
-        strongDimensions: ['architecture'],
-        weakDimensions: ['engineering', 'model'],
-        timeSpent: '15 分钟',
+        totalQuestions,
+        averageScore,
+        strongDimensions,
+        weakDimensions,
       },
-      overallAssessment: '你对 Agent 架构的基本概念有正确理解，但在工程落地细节和模型调优方面还需加强。建议重点补充 Harness 工程实践和 Prompt Engineering。',
-      nextSteps: [
-        '重点练习 engineering 维度的题目',
-        '对每道题尝试用"分点 + 实例 + 踩坑"结构回答',
-        '下次会话前复习本次诊断中的差距点',
-      ],
+      recentHistory: recentEntries,
+      dimensionBreakdown: avgByDim,
+      overallAssessment,
+      nextSteps,
     };
 
     if (format === 'brief') {
       return {
         success: true,
         output: JSON.stringify({
-          score: report.summary.averageScore,
-          weak: report.summary.weakDimensions,
-          tip: report.nextSteps[0],
+          score: averageScore,
+          totalQuestions,
+          weak: weakDimensions,
+          strong: strongDimensions,
+          tip: nextSteps[0] ?? '继续练习',
         }),
       };
     }
