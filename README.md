@@ -20,6 +20,31 @@ OfferClaw 是一个面向 AI Agent / LLM 工程方向求职者的全链路辅导
 
 ---
 
+## 界面截图
+
+![首页](./assets/首页.png)
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="./assets/知识库维度.png" alt="知识库维度" />
+      <p align="center"><sub>知识库维度 — 实时统计各维度题目数量</sub></p>
+    </td>
+    <td width="50%">
+      <img src="./assets/薄弱点分析.png" alt="薄弱点分析" />
+      <p align="center"><sub>薄弱点分析 — 跨会话追踪，维度级学习报告</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="./assets/模拟问题.png" alt="模拟面试" />
+      <p align="center"><sub>模拟面试 — 从知识库抽题，流式输出诊断结果</sub></p>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## 功能模块
 
 | 模块 | 能力 |
