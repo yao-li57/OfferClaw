@@ -13,8 +13,9 @@
 
 OfferClaw 是一个面向 AI Agent / LLM 工程方向求职者的全链路辅导系统。核心特点：
 
-- **纯手写 Agent Loop** — 不依赖任何 Agent 框架，完整实现从 Query Engine 到 Sub-agent 的每一层
-- **并行诊断编排** — 内容 / 表达 / 语音三通道 Sub-agent 并发执行，速度比串行快 2-3x，含失败隔离与 RRF 分数融合
+- **纯手写 Agent Loop** — 不依赖任何 Agent 框架，完整实现 10 层 Harness 架构，每层职责单一、可独立替换
+- **Skills 复合编排** — 三个内置 Skill（全链路诊断 / JD全分析 / 快速模拟面试），`AsyncGenerator<SkillEvent>` 流式进度，`invoke_skill` 工具双路触发
+- **并行诊断编排** — 内容 / 表达 / 语音三通道 Sub-agent 并发执行，速度比串行快 2-3x，RRF 加权分数融合，失败隔离
 - **知识库驱动** — 385+ 道面试题，覆盖 15 个核心考察维度，**双通道检索**：SQLite FTS5（词法）+ Embedding 向量（语义）× Reciprocal Rank Fusion 融合
 - **持久化记忆** — 每次诊断结果写入 SQLite，跨会话追踪薄弱点，二次作答自动更新分数
 - **Web UI** — Next.js 14 + SSE 流式输出，多会话管理，支持文件上传和语音输入
@@ -88,19 +89,78 @@ cd web && npm install && npm run dev
 
 ## 架构设计
 
+### Harness 10 层模型
+
+OfferClaw 的核心是一套手写的 **10 层 Harness** 架构，每一层职责单一、可独立替换，不依赖任何 Agent 框架。
+
 ```
-┌─────────────────────────────────────────────┐
-│               Agent Loop                    │
-├─────────────────────────────────────────────┤
-│  Query Engine  │  Context Manager  │  Memory │
-├─────────────────────────────────────────────┤
-│  Tool Registry  │  Permission Gate  │  Hooks  │
-├──────────────────────────┬──────────────────┤
-│  Session Manager         │  DiagnosisOrch.  │
-│  Command Parser          │  (并行 Sub-agent)│
-├──────────────────────────┴──────────────────┤
-│        ConcurrencyPool · Sub-agent Runtime  │
-└─────────────────────────────────────────────┘
+用户输入
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│  10  Command          /help /skills /reset …                 │  ← 斜杠命令拦截层
+├──────────────────────────────────────────────────────────────┤
+│   9  Hook Pipeline    inputSanitizer · tokenCounter          │  ← pre/post-tool 治理
+├──────────────────────────────────────────────────────────────┤
+│   8  Session          状态机 idle→active→paused · checkpoint │  ← 会话生命周期
+├──────────────────────────────────────────────────────────────┤
+│   7  Permission Gate  RiskLevel · Rate Limit · Audit Log     │  ← 权限与审计
+├──────────────────────────────────────────────────────────────┤
+│   6  Memory           weakness/strength · 重要度衰减          │  ← 跨会话长期记忆
+├──────────────────────────────────────────────────────────────┤
+│   5  Context Manager  5 层优先级 · 3 级压缩 · Token 预算     │  ← System Prompt 组装
+├──────────────────────────────────────────────────────────────┤
+│   4  Query Engine     Provider Router · Retry · Stream       │  ← 多 Provider 统一调用
+│                       Claude / GPT-4o / DeepSeek / Mock      │
+├──────────────────────────────────────────────────────────────┤
+│   3  Skills           full-diagnosis · jd-full-analysis      │  ← 多工具复合工作流
+│                       quick-mock  （AsyncGenerator 流式进度）│
+├──────────────────────────────────────────────────────────────┤
+│   2  Tools            14 内置工具 · RiskLevel · invoke_skill │  ← 原子能力单元
+│                       parallel_diagnose（3维并行 + RRF融合） │
+├──────────────────────────────────────────────────────────────┤
+│   1  Sub-agent        DiagnosisOrchestrator · SubAgent       │  ← 并发执行 + 失败隔离
+│                       ConcurrencyPool（maxConcurrency=3）    │
+└──────────────────────────────────────────────────────────────┘
+    │
+    ▼
+输出（流式 SSE / CLI）
+```
+
+| 层 | 模块 | 核心职责 |
+|:--|:--|:--|
+| 10 | `src/command/` | 斜杠命令解析，在消息到达 Agent 前拦截处理 |
+| 9 | `src/hooks/` | pre-tool 输入净化、post-tool 结果改写、token 计数 |
+| 8 | `src/session/` | 对话状态机 + checkpoint/rewind + SQLite 持久化 |
+| 7 | `src/permission/` | 工具风险分级（low/medium/high/critical）+ 速率限制 + 审计日志 |
+| 6 | `src/memory/` | 长期记忆存取、重要度衰减、跨会话薄弱点追踪 |
+| 5 | `src/context/` | 5 优先级层（system > immediate > knowledge > memory > session）+ 3 级压缩 |
+| 4 | `src/query-engine/` | Provider 路由、流式 SSE 收集、指数退避重试 |
+| 3 | `src/skills/` | SkillRegistry + `AsyncGenerator<SkillEvent>` 流式进度编排 |
+| 2 | `src/tools/` | ToolRegistry + 14 内置工具，含 `parallel_diagnose` 三维并行诊断 |
+| 1 | `src/agent/` | SubAgent + DiagnosisOrchestrator + ConcurrencyPool |
+
+### 请求流
+
+```
+用户消息
+ → Command 拦截（/skills? 直接返回）
+ → AgentLoop.run()
+     ├─ Memory 加载薄弱点 → Context 注入
+     ├─ Context 压缩 → buildSystemPrompt()
+     ├─ QueryEngine.query() ──→ LLM 响应
+     │       └─ ProviderRouter → Provider.stream() → StreamCollector
+     ├─ type=text → 返回
+     └─ type=tool_use
+           ├─ PermissionGate.check()
+           ├─ HookPipeline.runPreTool()
+           ├─ ToolRegistry.execute()
+           │     └─ invoke_skill? → SkillRegistry.run()
+           │           └─ Skill steps → ToolRegistry.execute()（并行/串行）
+           │                 └─ parallel_diagnose → Orchestrator
+           │                       └─ ConcurrencyPool → SubAgent × 3
+           ├─ HookPipeline.runPostTool()
+           └─ 结果追加 messages → 下一轮迭代
 ```
 
 ### 技术栈
@@ -120,16 +180,18 @@ cd web && npm install && npm run dev
 
 ```
 src/
-├── agent/           # Agent Loop + 并行诊断编排器（Orchestrator / SubAgent / Pool）
-├── query-engine/    # LLM 调用层（多 Provider + 重试 + 路由）
+├── agent/           # Layer 1 — SubAgent / DiagnosisOrchestrator / ConcurrencyPool
+├── skills/          # Layer 3 — SkillRegistry + 3 内置 Skills（full-diagnosis / jd-full-analysis / quick-mock）
+├── query-engine/    # Layer 4 — 多 Provider 统一调用（重试 / 路由 / 流式）
 │   └── providers/   # Claude / OpenAI / DeepSeek / Mock
 ├── tools/
-│   └── builtin/     # 14 个内置工具（诊断 / 并行诊断 / JD / 简历 / 模拟面试）
-├── context/         # 5 层上下文 + 3 级压缩
-├── memory/          # SQLite 持久化记忆
-├── session/         # 会话状态机 + SQLite 持久化
-├── permission/      # 风险分级权限控制
-├── hooks/           # Hook 管线（pre/post-tool）
+│   └── builtin/     # Layer 2 — 15 个内置工具（含 parallel_diagnose / invoke_skill）
+├── context/         # Layer 5 — 5 优先级层 + 3 级压缩
+├── memory/          # Layer 6 — SQLite 持久化记忆 + 重要度衰减
+├── session/         # Layer 8 — 会话状态机 + checkpoint
+├── permission/      # Layer 7 — 风险分级 + 速率限制 + 审计日志
+├── hooks/           # Layer 9 — pre/post-tool Hook 管线
+├── command/         # Layer 10 — 斜杠命令（/help /skills /dimensions …）
 └── db/              # SQLite schema 与连接
 knowledge/           # 面试题知识库（Markdown → SQLite FTS5 + Embedding）
 learn-agent-interview/  # 385+ 道结构化面试题（15 个维度，新手答/高手答/差距分析）
