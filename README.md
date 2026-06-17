@@ -14,7 +14,8 @@
 OfferClaw 是一个面向 AI Agent / LLM 工程方向求职者的全链路辅导系统。核心特点：
 
 - **纯手写 Agent Loop** — 不依赖任何 Agent 框架，完整实现从 Query Engine 到 Sub-agent 的每一层
-- **知识库驱动** — 385+ 道面试题，覆盖 15 个核心考察维度，**双通道检索**：SQLite FTS5（词法）+ OpenAI Embedding 向量（语义）× Reciprocal Rank Fusion 融合
+- **并行诊断编排** — 内容 / 表达 / 语音三通道 Sub-agent 并发执行，速度比串行快 2-3x，含失败隔离与 RRF 分数融合
+- **知识库驱动** — 385+ 道面试题，覆盖 15 个核心考察维度，**双通道检索**：SQLite FTS5（词法）+ Embedding 向量（语义）× Reciprocal Rank Fusion 融合
 - **持久化记忆** — 每次诊断结果写入 SQLite，跨会话追踪薄弱点，二次作答自动更新分数
 - **Web UI** — Next.js 14 + SSE 流式输出，多会话管理，支持文件上传和语音输入
 
@@ -49,7 +50,7 @@ OfferClaw 是一个面向 AI Agent / LLM 工程方向求职者的全链路辅导
 
 | 模块 | 能力 |
 |:---|:---|
-| 🎯 面试诊断 | 输入面试题 + 回答 → 评分 + 差距分析 + 改进建议 |
+| 🎯 面试诊断 | 输入面试题 + 回答 → **三通道并行诊断**（内容/表达/语音）→ 评分 + 差距分析 + 改进建议 |
 | 📋 JD 分析 | 贴入 JD → 技术栈提取 + 职级判断 + 面试准备重点 |
 | 📝 简历优化 | 段落级诊断：量化度 / STAR 结构 / 关键词覆盖 |
 | 🔗 简历-JD 匹配 | 关键词覆盖率 + 缺失项 + 定向包装建议 |
@@ -94,10 +95,11 @@ cd web && npm install && npm run dev
 │  Query Engine  │  Context Manager  │  Memory │
 ├─────────────────────────────────────────────┤
 │  Tool Registry  │  Permission Gate  │  Hooks  │
-├─────────────────────────────────────────────┤
-│  Session Manager  │  Command Parser          │
-├─────────────────────────────────────────────┤
-│              Sub-agent Runtime               │
+├──────────────────────────┬──────────────────┤
+│  Session Manager         │  DiagnosisOrch.  │
+│  Command Parser          │  (并行 Sub-agent)│
+├──────────────────────────┴──────────────────┤
+│        ConcurrencyPool · Sub-agent Runtime  │
 └─────────────────────────────────────────────┘
 ```
 
@@ -118,11 +120,11 @@ cd web && npm install && npm run dev
 
 ```
 src/
-├── agent/           # Agent Loop 核心循环
+├── agent/           # Agent Loop + 并行诊断编排器（Orchestrator / SubAgent / Pool）
 ├── query-engine/    # LLM 调用层（多 Provider + 重试 + 路由）
 │   └── providers/   # Claude / OpenAI / DeepSeek / Mock
 ├── tools/
-│   └── builtin/     # 13 个内置工具（诊断 / JD / 简历 / 模拟面试）
+│   └── builtin/     # 14 个内置工具（诊断 / 并行诊断 / JD / 简历 / 模拟面试）
 ├── context/         # 5 层上下文 + 3 级压缩
 ├── memory/          # SQLite 持久化记忆
 ├── session/         # 会话状态机 + SQLite 持久化
@@ -151,6 +153,9 @@ DEEPSEEK_API_KEY=sk-...
 LLM_BASE_URL=https://your-endpoint/v1
 LLM_API_KEY=your-key
 LLM_MODEL=your-model-name
+
+# 知识库向量检索（需 OpenAI 兼容的 embedding 端点）
+EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 ---

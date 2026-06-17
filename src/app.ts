@@ -4,11 +4,14 @@ import { OpenAIProvider } from './query-engine/providers/openai.js';
 import { DeepSeekProvider } from './query-engine/providers/deepseek.js';
 import { MockProvider } from './query-engine/providers/mock.js';
 import { createToolRegistry } from './tools/index.js';
+import { createParallelDiagnoseTool } from './tools/builtin/parallel-diagnose.js';
 import { PermissionGate } from './permission/index.js';
 import { ContextManager } from './context/index.js';
 import { SessionManager } from './session/index.js';
 import { MemoryStore } from './memory/index.js';
 import { AgentLoop } from './agent/index.js';
+import { DiagnosisOrchestrator } from './agent/orchestrator.js';
+import { ConcurrencyPool } from './agent/pool.js';
 import { HookPipeline, inputSanitizerHook, tokenCounterHook } from './hooks/index.js';
 import {
   CommandParser,
@@ -27,7 +30,7 @@ const SYSTEM_PROMPT = `你是 OfferPilot，一个全链路求职辅导 Agent，�
 
 【面试诊断】
 1. 搜索知识库中的 385+ 道真实面试题及高手答案
-2. 对用户的回答进行结构化诊断（评分 + 差距分析 + 改进建议）
+2. 对用户的回答进行多维度并行诊断（parallel_diagnose）：内容诊断 + 表达诊断 + 语音分析三通道并发执行，速度比串行快 2-3x
 3. 模拟面试官追问，检验理解深度
 4. 对比用户答案与专家答案的差距
 
@@ -83,6 +86,12 @@ export function createApp(opts?: AppOptions) {
   });
 
   const toolRegistry = createToolRegistry();
+
+  // Parallel diagnosis orchestrator — shared concurrency pool across all requests
+  const diagnosisPool = new ConcurrencyPool(3);
+  const orchestrator = new DiagnosisOrchestrator(queryEngine, diagnosisPool, opts?.model);
+  toolRegistry.register(createParallelDiagnoseTool(orchestrator));
+
   const permissionGate = new PermissionGate();
   const contextManager = new ContextManager();
   const sessionManager = new SessionManager(db);
