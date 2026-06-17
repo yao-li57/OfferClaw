@@ -71,34 +71,36 @@ function walkMarkdownFiles(dir: string): string[] {
 
 function detectDimension(path: string): string {
   const dimensionMap: Record<string, string> = {
-    '01-architecture': 'architecture',
+    // knowledge/ original dirs
     '01-arch': 'architecture',
-    '02-tool': 'engineering',
     '02-eng': 'engineering',
-    '03-fault': 'engineering',
     '03-model': 'model',
-    '04-memory': 'memory',
     '04-rag': 'rag',
-    '05-eval': 'evaluation',
     '05-multi': 'multi-agent',
-    '06-multi': 'multi-agent',
     '06-eval': 'evaluation',
-    '07-eng': 'engineering',
     '07-full': 'full-stack',
-    '08-prompt': 'model',
-    '09-rag': 'rag',
-    '10-train': 'model',
-    '11-ai': 'engineering',
-    '12-busi': 'engineering',
-    '13-proj': 'general',
-    '14-comp': 'general',
-    '15-agent': 'architecture',
+    // learn-agent-interview/ dirs
+    '01-architecture': 'architecture',   // 架构设计
+    '02-tool': 'engineering',            // 工具管理
+    '03-fault': 'engineering',           // 容错与可靠性
+    '04-memory': 'architecture',         // 记忆与上下文 → 架构核心
+    '05-eval': 'evaluation',             // 评测与前沿洞见
+    '06-multi': 'multi-agent',           // 多 Agent 协作
+    '07-eng': 'engineering',             // 工程踩坑实录
+    '08-prompt': 'model',                // Prompt 工程
+    '09-rag': 'rag',                     // RAG 与检索增强
+    '10-train': 'model',                 // 训练与数据工程
+    '11-ai': 'engineering',              // AI 代码测试
+    '12-busi': 'full-stack',             // 商业 AI 工程 → 全栈工程能力
+    '13-proj': 'engineering',            // 项目深挖
+    '14-comp': 'engineering',            // 公司偏好研究
+    '15-agent': 'architecture',          // Agent 核心概念
   };
 
   for (const [prefix, dim] of Object.entries(dimensionMap)) {
     if (path.includes(prefix)) return dim;
   }
-  return 'general';
+  return 'engineering'; // safe fallback for any unmatched path
 }
 
 function extractQuestions(content: string): ParsedQuestion[] {
@@ -107,10 +109,10 @@ function extractQuestions(content: string): ParsedQuestion[] {
 
   for (const block of qBlocks) {
     const lines = block.trim();
-    const questionMatch = lines.match(/^(.+?)(?:\n|$)/);
-    if (!questionMatch) continue;
+    // Use split instead of regex to avoid tsx-compiled /^(.+?)(\n|$)/ edge case
+    const question = lines.split('\n')[0].replace(/\r$/, '').trim();
+    if (!question) continue;
 
-    const question = questionMatch[1].trim();
     const noviceMatch = lines.match(/\*\*新手答\*\*[：:]?\s*"?(.+?)"?\s*(?:\n|$)/);
     const expertMatch = lines.match(/\*\*高手答\*\*[：:]?\s*\n([\s\S]+?)(?=\n\*\*|$)/);
 
