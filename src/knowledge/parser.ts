@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { KnowledgeEntry } from './types.js';
 
 interface ParsedQuestion {
@@ -8,6 +8,10 @@ interface ParsedQuestion {
   noviceAnswer?: string;
   expertAnswer?: string;
   tags?: string[];
+}
+
+function stableId(sourceFile: string, key: string): string {
+  return createHash('sha256').update(sourceFile + '\x00' + key).digest('hex').slice(0, 36);
 }
 
 export function parseKnowledgeDir(dirPath: string): KnowledgeEntry[] {
@@ -23,7 +27,7 @@ export function parseKnowledgeDir(dirPath: string): KnowledgeEntry[] {
     if (questions.length > 0) {
       for (const q of questions) {
         entries.push({
-          id: randomUUID(),
+          id: stableId(relPath, q.question),
           title: q.question.slice(0, 100),
           dimension,
           content: buildContent(q),
@@ -36,7 +40,7 @@ export function parseKnowledgeDir(dirPath: string): KnowledgeEntry[] {
       }
     } else {
       entries.push({
-        id: randomUUID(),
+        id: stableId(relPath, relPath),
         title: extractTitle(content) ?? relPath,
         dimension,
         content,
@@ -67,13 +71,28 @@ function walkMarkdownFiles(dir: string): string[] {
 
 function detectDimension(path: string): string {
   const dimensionMap: Record<string, string> = {
-    '01-': 'architecture',
-    '02-': 'engineering',
-    '03-': 'model',
-    '04-': 'rag',
-    '05-': 'multi-agent',
-    '06-': 'evaluation',
-    '07-': 'full-stack',
+    '01-architecture': 'architecture',
+    '01-arch': 'architecture',
+    '02-tool': 'engineering',
+    '02-eng': 'engineering',
+    '03-fault': 'engineering',
+    '03-model': 'model',
+    '04-memory': 'memory',
+    '04-rag': 'rag',
+    '05-eval': 'evaluation',
+    '05-multi': 'multi-agent',
+    '06-multi': 'multi-agent',
+    '06-eval': 'evaluation',
+    '07-eng': 'engineering',
+    '07-full': 'full-stack',
+    '08-prompt': 'model',
+    '09-rag': 'rag',
+    '10-train': 'model',
+    '11-ai': 'engineering',
+    '12-busi': 'engineering',
+    '13-proj': 'general',
+    '14-comp': 'general',
+    '15-agent': 'architecture',
   };
 
   for (const [prefix, dim] of Object.entries(dimensionMap)) {

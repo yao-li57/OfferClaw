@@ -42,7 +42,7 @@ export const generateFollowup: ToolDefinition = {
 
         // Search for related questions, excluding the original question
         const limit = depth === 'shallow' ? 2 : depth === 'deep' ? 4 : 3;
-        const results = search.search({ query: combined, limit: limit + 2, method: 'hybrid' });
+        const results = await search.search({ query: combined, limit: limit + 2, method: 'hybrid' });
         db.close();
 
         const followups = results

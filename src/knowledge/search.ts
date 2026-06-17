@@ -1,23 +1,32 @@
 import type Database from 'better-sqlite3';
 import type { KnowledgeEntry, SearchOptions, SearchResult } from './types.js';
+import { EmbeddingService } from './embedding.js';
+
+const RRF_K = 60;
 
 export class KnowledgeSearch {
   private db: Database.Database;
+  private embedService: EmbeddingService | undefined;
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, embedService?: EmbeddingService) {
     this.db = db;
+    this.embedService = embedService;
   }
 
-  search(opts: SearchOptions): SearchResult[] {
+  async search(opts: SearchOptions): Promise<SearchResult[]> {
     const { query, dimension, limit = 5, method = 'hybrid' } = opts;
 
     if (method === 'fts') return this.ftsSearch(query, dimension, limit);
     if (method === 'embedding') return this.embeddingSearch(query, dimension, limit);
 
-    const ftsResults = this.ftsSearch(query, dimension, limit);
-    const embResults = this.embeddingSearch(query, dimension, limit);
+    const [ftsResults, embResults] = await Promise.all([
+      this.ftsSearch(query, dimension, limit),
+      this.embeddingSearch(query, dimension, limit),
+    ]);
 
-    return this.mergeResults(ftsResults, embResults, limit);
+    if (embResults.length === 0) return ftsResults;
+
+    return this.mergeWithRRF(ftsResults, embResults, limit);
   }
 
   private ftsSearch(query: string, dimension: string | undefined, limit: number): SearchResult[] {
@@ -55,68 +64,132 @@ export class KnowledgeSearch {
     }));
   }
 
-  private embeddingSearch(query: string, dimension: string | undefined, limit: number): SearchResult[] {
-    // Embedding search requires vector computation
-    // Will be implemented when embedding generation is ready
-    // For now, fall back to a simple LIKE search
-    let sql = `SELECT * FROM knowledge WHERE content LIKE ?`;
-    const params: unknown[] = [`%${query.slice(0, 20)}%`];
+  private async embeddingSearch(
+    query: string,
+    dimension: string | undefined,
+    limit: number,
+  ): Promise<SearchResult[]> {
+    if (!this.embedService?.available) return [];
+
+    const queryVec = await this.embedService.embed(query);
+    if (!queryVec) return [];
+
+    let sql = `
+      SELECT k.*, e.vector
+      FROM knowledge k
+      JOIN embeddings e ON e.knowledge_id = k.id
+    `;
+    const params: unknown[] = [];
 
     if (dimension) {
-      sql += ` AND dimension = ?`;
+      sql += ` WHERE k.dimension = ?`;
       params.push(dimension);
     }
 
-    sql += ` LIMIT ?`;
-    params.push(limit);
+    const rows = this.db.prepare(sql).all(...params) as (Record<string, unknown> & {
+      vector: Buffer;
+    })[];
 
-    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    const scored = rows
+      .map((row) => ({
+        entry: this.rowToEntry(row),
+        score: EmbeddingService.cosineSimilarity(
+          queryVec,
+          EmbeddingService.deserializeVector(row.vector),
+        ),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
 
-    return rows.map((row, i) => ({
-      entry: this.rowToEntry(row),
-      score: 1 - i * 0.1,
-      matchType: 'embedding' as const,
-    }));
+    return scored.map((r) => ({ ...r, matchType: 'embedding' as const }));
   }
 
-  private mergeResults(fts: SearchResult[], emb: SearchResult[], limit: number): SearchResult[] {
-    const seen = new Set<string>();
-    const merged: SearchResult[] = [];
+  private mergeWithRRF(fts: SearchResult[], emb: SearchResult[], limit: number): SearchResult[] {
+    const scores = new Map<string, { result: SearchResult; score: number }>();
 
-    const all = [...fts, ...emb].sort((a, b) => b.score - a.score);
+    const addRanks = (results: SearchResult[]) => {
+      results.forEach((r, rank) => {
+        const rrfScore = 1 / (RRF_K + rank + 1);
+        const existing = scores.get(r.entry.id);
+        if (existing) {
+          existing.score += rrfScore;
+        } else {
+          scores.set(r.entry.id, { result: r, score: rrfScore });
+        }
+      });
+    };
 
-    for (const result of all) {
-      if (seen.has(result.entry.id)) continue;
-      seen.add(result.entry.id);
-      merged.push({ ...result, matchType: 'hybrid' });
-      if (merged.length >= limit) break;
-    }
+    addRanks(fts);
+    addRanks(emb);
 
-    return merged;
+    return Array.from(scores.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(({ result, score }) => ({ ...result, score, matchType: 'hybrid' as const }));
+  }
+
+  async generateEmbeddings(embedService: EmbeddingService): Promise<number> {
+    const rows = this.db
+      .prepare(
+        `SELECT k.id, k.content, k.question
+         FROM knowledge k
+         LEFT JOIN embeddings e ON e.knowledge_id = k.id
+         WHERE e.knowledge_id IS NULL`,
+      )
+      .all() as { id: string; content: string; question: string }[];
+
+    if (rows.length === 0) return 0;
+
+    const texts = rows.map((r) =>
+      // Only embed the question for compact representation; stella has 512-token limit
+      (r.question || r.title || '').slice(0, 500),
+    );
+
+    const vectors = await embedService.embedBatch(texts);
+
+    const insert = this.db.prepare(
+      `INSERT OR REPLACE INTO embeddings (knowledge_id, vector, model) VALUES (?, ?, ?)`,
+    );
+
+    const tx = this.db.transaction(() => {
+      let count = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const vec = vectors[i];
+        if (vec) {
+          insert.run(rows[i].id, EmbeddingService.serializeVector(vec), 'text-embedding-3-small');
+          count++;
+        }
+      }
+      return count;
+    });
+
+    return tx() as number;
   }
 
   insert(entry: KnowledgeEntry): void {
-    this.db.prepare(`
-      INSERT OR REPLACE INTO knowledge (id, title, dimension, content, source_file, question, expert_answer, novice_answer, tags)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      entry.id,
-      entry.title,
-      entry.dimension,
-      entry.content,
-      entry.sourceFile ?? null,
-      entry.question ?? null,
-      entry.expertAnswer ?? null,
-      entry.noviceAnswer ?? null,
-      entry.tags?.join(',') ?? null,
-    );
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO knowledge (id, title, dimension, content, source_file, question, expert_answer, novice_answer, tags)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        entry.id,
+        entry.title,
+        entry.dimension,
+        entry.content,
+        entry.sourceFile ?? null,
+        entry.question ?? null,
+        entry.expertAnswer ?? null,
+        entry.noviceAnswer ?? null,
+        entry.tags?.join(',') ?? null,
+      );
   }
 
   bulkInsert(entries: KnowledgeEntry[]): void {
-    const insert = this.db.prepare(`
-      INSERT OR REPLACE INTO knowledge (id, title, dimension, content, source_file, question, expert_answer, novice_answer, tags)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    const insert = this.db.prepare(
+      `INSERT OR REPLACE INTO knowledge (id, title, dimension, content, source_file, question, expert_answer, novice_answer, tags)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
 
     const tx = this.db.transaction((items: KnowledgeEntry[]) => {
       for (const entry of items) {

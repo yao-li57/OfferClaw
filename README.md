@@ -14,7 +14,7 @@
 OfferClaw 是一个面向 AI Agent / LLM 工程方向求职者的全链路辅导系统。核心特点：
 
 - **纯手写 Agent Loop** — 不依赖任何 Agent 框架，完整实现从 Query Engine 到 Sub-agent 的每一层
-- **知识库驱动** — 300+ 道真实大厂面试题，覆盖 7 个核心考察维度，SQLite FTS5 全文检索
+- **知识库驱动** — 385+ 道面试题，覆盖 15 个核心考察维度，**双通道检索**：SQLite FTS5（词法）+ OpenAI Embedding 向量（语义）× Reciprocal Rank Fusion 融合
 - **持久化记忆** — 每次诊断结果写入 SQLite，跨会话追踪薄弱点，二次作答自动更新分数
 - **Web UI** — Next.js 14 + SSE 流式输出，多会话管理，支持文件上传和语音输入
 
@@ -109,7 +109,7 @@ cd web && npm install && npm run dev
 | 支持模型 | Claude / GPT-4o / DeepSeek / 任意 OpenAI 兼容端点 |
 | 运行时 | Node.js 18+ + TypeScript 5.5 (ES2022 ESM) |
 | 数据库 | better-sqlite3（会话 / 记忆 / 知识库） |
-| 知识检索 | SQLite FTS5 全文检索 + LIKE 混合搜索 |
+| 知识检索 | SQLite FTS5（词法）+ OpenAI `text-embedding-3-small`（向量）× Reciprocal Rank Fusion |
 | 前端 | Next.js 14 + Tailwind CSS + SSE 流式 |
 
 ---
@@ -129,7 +129,8 @@ src/
 ├── permission/      # 风险分级权限控制
 ├── hooks/           # Hook 管线（pre/post-tool）
 └── db/              # SQLite schema 与连接
-knowledge/           # 面试题知识库（Markdown → SQLite FTS5）
+knowledge/           # 面试题知识库（Markdown → SQLite FTS5 + Embedding）
+learn-agent-interview/  # 385+ 道结构化面试题（15 个维度，新手答/高手答/差距分析）
 web/                 # Next.js Web UI
 └── src/
     ├── app/api/     # SSE 聊天 / 会话 / 文件上传 / 语音转写

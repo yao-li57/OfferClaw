@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import chalk from 'chalk';
 import { createApp } from './app.js';
 import { openDatabase, initSchema } from './db/index.js';
-import { parseKnowledgeDir } from './knowledge/index.js';
+import { parseKnowledgeDir, EmbeddingService } from './knowledge/index.js';
 import { KnowledgeSearch } from './knowledge/search.js';
 
 const program = new Command();
@@ -119,10 +119,20 @@ program
     const db = openDatabase(dbPath);
     initSchema(db);
 
-    const search = new KnowledgeSearch(db);
+    const embedService = new EmbeddingService();
+    const search = new KnowledgeSearch(db, embedService);
     search.bulkInsert(entries);
 
     console.log(chalk.green(`写入数据库: ${search.count()} 条 (${dbPath})`));
+
+    if (embedService.available) {
+      console.log(chalk.dim('生成 Embedding 向量...'));
+      const generated = await search.generateEmbeddings(embedService);
+      console.log(chalk.green(`Embedding 生成完成: ${generated} 条`));
+    } else {
+      console.log(chalk.yellow('未配置 OPENAI_API_KEY，跳过 Embedding 生成（仅 FTS5 检索可用）'));
+    }
+
     db.close();
   });
 

@@ -35,7 +35,7 @@ export const compareAnswers: ToolDefinition = {
         const { KnowledgeSearch } = await import('../../knowledge/search.js');
         const db = openDatabase(DB_PATH);
         const search = new KnowledgeSearch(db);
-        const results = search.search({ query: question, limit: 1, method: 'fts' });
+        const results = await search.search({ query: question, limit: 1, method: 'fts' });
         if (results.length > 0 && results[0].entry.expertAnswer) {
           expertAnswer = results[0].entry.expertAnswer;
         }

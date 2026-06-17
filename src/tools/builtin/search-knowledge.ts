@@ -70,7 +70,7 @@ export const searchKnowledge: ToolDefinition = {
         const { KnowledgeSearch } = await import('../../knowledge/search.js');
         const db = openDatabase(DB_PATH);
         const search = new KnowledgeSearch(db);
-        const results = search.search({ query, dimension, limit });
+        const results = await search.search({ query, dimension, limit });
         db.close();
         return {
           success: true,
