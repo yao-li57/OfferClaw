@@ -7,3 +7,4 @@ export {
   quitCommand,
   resetCommand,
 } from './handlers/builtin.js';
+export { createSkillsCommand } from './handlers/skills.js';

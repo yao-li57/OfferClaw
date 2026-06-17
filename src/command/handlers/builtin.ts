@@ -10,6 +10,7 @@ export const helpCommand: CommandHandler = {
   /help       显示帮助
   /status     查看当前会话状态
   /dimensions 列出所有考察维度
+  /skills     列出所有可用 Skills
   /score      查看当前得分
   /report     生成会话报告
   /reset      重新开始会话
