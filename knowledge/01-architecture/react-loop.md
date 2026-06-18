@@ -67,3 +67,53 @@ Tool Calling 的本质是：LLM 在生成过程中，不输出自然语言文本
 5. **流式适配**：Claude 的 SSE 事件名和 OpenAI 的 chunk 格式完全不同，适配层要屏蔽这些差异，对上层只暴露统一的 StreamEvent。
 
 **差距在哪**：if-else 能跑但不能维护。面试官期望看到接口抽象、错误归一化和流式统一这三个关键设计决策。
+
+## Q：如何实现 Agent 流式输出的中途取消？用户中断请求时如何清理资源？
+
+> 来源：全栈工程师面试
+
+**新手答**："前端不显示了就算取消"
+
+**高手答**：
+
+流式取消是一个端到端的问题，前端"不显示"了，服务端的 LLM 调用可能还在跑，持续消耗 token 和计算资源。
+
+**前端取消**：
+```typescript
+const controller = new AbortController();
+const res = await fetch('/api/chat', {
+  signal: controller.signal,   // 绑定 abort signal
+  method: 'POST', body: ...
+});
+// 用户点取消或组件卸载时：
+controller.abort();
+```
+
+**服务端感知断开**：
+前端 abort 后，服务端 `req.on('close', ...)` 会触发。必须在这里主动取消 LLM 调用，否则调用会跑完：
+```typescript
+// Node.js
+req.on('close', () => {
+  llmAbortController.abort();  // 取消 LLM 调用
+  cleanupSession(sessionId);   // 释放 session 锁
+});
+
+// Next.js App Router
+request.signal.addEventListener('abort', () => {
+  llmAbortController.abort();
+});
+```
+
+**LLM 调用层传递 signal**：
+```typescript
+const stream = provider.stream(params, { signal: abortController.signal });
+```
+Anthropic SDK 和 OpenAI SDK 都支持 `signal` 参数，abort 后立即停止流式接收，不再计费后续 token（已接收的 token 仍计费）。
+
+**Agent Loop 的清理**：
+取消时除了终止 LLM 调用，还需要：
+1. 释放 session 的 `active` 锁，否则后续请求进不来
+2. 如果工具正在执行（如文件写入），根据工具特性决定是否回滚
+3. 记录到 audit log（`status: cancelled`）
+
+**差距在哪**：新手只处理前端，高手关注服务端资源回收——未处理的 abort 会导致 token 浪费、session 锁死和资源泄露。

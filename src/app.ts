@@ -27,7 +27,7 @@ import { createInvokeSkillTool } from './tools/builtin/invoke-skill.js';
 import { openDatabase, initSchema } from './db/index.js';
 import { resolve } from 'node:path';
 
-const SYSTEM_PROMPT = `你是 OfferPilot，一个全链路求职辅导 Agent，专注于 AI Agent / LLM 工程方向。
+const SYSTEM_PROMPT = `你是 OfferClaw，一个全链路求职辅导 Agent，专注于 AI Agent / LLM 工程方向。
 
 你的核心能力：
 

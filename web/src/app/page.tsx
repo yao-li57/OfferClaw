@@ -24,9 +24,10 @@ export default function Home() {
     void initSessions();
   }, []);
 
-  async function initSessions() {
+  async function initSessions(retryCount = 0) {
     try {
       const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { sessions: SessionMeta[] };
       const list: SessionMeta[] = data.sessions ?? [];
       setSessions(list);
@@ -42,7 +43,12 @@ export default function Home() {
         await createNewSession(list);
       }
     } catch {
-      await createNewSession([]);
+      // Backend not ready yet — retry up to 4 times before creating a new session
+      if (retryCount < 4) {
+        setTimeout(() => { void initSessions(retryCount + 1); }, 1500);
+      } else {
+        await createNewSession([]);
+      }
     }
   }
 

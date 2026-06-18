@@ -28,8 +28,16 @@ program
       },
     });
 
-    const session = app.sessionManager.create();
-    console.log(chalk.green(`\n面试诊断 Agent 已启动 (session: ${session.id.slice(0, 8)})`));
+    const existing = app.sessionManager.list(1)[0];
+    const session = existing
+      ? (app.sessionManager.get(existing.id) ?? app.sessionManager.create())
+      : app.sessionManager.create();
+    const isResume = !!existing;
+    console.log(
+      isResume
+        ? chalk.green(`\n已恢复上次会话 (session: ${session.id.slice(0, 8)}, 共 ${existing.messageCount} 条消息)`)
+        : chalk.green(`\n面试诊断 Agent 已启动 (session: ${session.id.slice(0, 8)})`),
+    );
     console.log(chalk.dim('输入面试题开始诊断，输入 /help 查看命令\n'));
 
     const rl = createInterface({
@@ -106,22 +114,27 @@ program
 program
   .command('build-kb')
   .description('解析知识库 Markdown 文件并写入 SQLite')
-  .option('-d, --dir <path>', '知识库目录', 'knowledge')
+  .option('-d, --dir <path...>', '知识库目录（可多个）', ['knowledge', 'learn-agent-interview'])
   .option('--db <path>', '数据库路径', 'data/agent.db')
   .action(async (opts) => {
-    const knowledgeDir = resolve(opts.dir);
+    const dirs: string[] = (Array.isArray(opts.dir) ? opts.dir : [opts.dir]).map((d: string) => resolve(d));
     const dbPath = resolve(opts.db);
 
-    console.log(chalk.dim(`解析知识库: ${knowledgeDir}`));
-    const entries = parseKnowledgeDir(knowledgeDir);
-    console.log(chalk.green(`解析完成: ${entries.length} 条知识条目`));
+    const allEntries = [];
+    for (const dir of dirs) {
+      console.log(chalk.dim(`解析知识库: ${dir}`));
+      const entries = parseKnowledgeDir(dir);
+      allEntries.push(...entries);
+      console.log(chalk.green(`  → ${entries.length} 条`));
+    }
+    console.log(chalk.green(`解析完成: ${allEntries.length} 条知识条目`));
 
     const db = openDatabase(dbPath);
     initSchema(db);
 
     const embedService = new EmbeddingService();
     const search = new KnowledgeSearch(db, embedService);
-    search.bulkInsert(entries);
+    search.bulkInsert(allEntries);
 
     console.log(chalk.green(`写入数据库: ${search.count()} 条 (${dbPath})`));
 

@@ -140,7 +140,7 @@ export class MockProvider implements LLMProvider {
     const lower = input.toLowerCase();
 
     if (lower.includes('你好') || lower.includes('hello') || lower.includes('hi')) {
-      return `你好！我是 OfferPilot，你的全链路求职辅导 Agent。
+      return `你好！我是 OfferClaw，你的全链路求职辅导 Agent。
 
 我可以帮你：
 1. **JD 分析** — 贴入职位描述，我帮你拆解要求和准备重点

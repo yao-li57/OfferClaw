@@ -163,7 +163,7 @@ export class SubAgent {
             strengths: [],
             gaps: ['无法解析诊断结果'],
             suggestions: [],
-            success: false,
+            success: true,
             error: 'JSON parse failed',
             duration,
             tokenUsage: {

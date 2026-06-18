@@ -141,6 +141,6 @@ const server = createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`OfferPilot HTTP backend listening on http://localhost:${PORT}`);
+  console.log(`OfferClaw HTTP backend listening on http://localhost:${PORT}`);
   console.log(`Providers: ${app.queryEngine.listProviders().join(', ')}`);
 });

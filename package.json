@@ -1,8 +1,8 @@
 {
-  "name": "offer-pilot",
+  "name": "offerclaw",
   "version": "0.1.0",
   "type": "module",
-  "description": "OfferPilot —— 基于 Harness 工程架构的 AI 面试诊断 Agent",
+  "description": "OfferClaw —— 基于 Harness 工程架构的 AI 面试诊断 Agent",
   "scripts": {
     "start": "tsx src/index.ts start",
     "diagnose": "tsx src/index.ts diagnose",

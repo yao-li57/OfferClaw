@@ -349,3 +349,184 @@
 5. **质量退化监控**：周期性对 Golden Set 进行自动评测，检测模型版本升级或 Prompt 变化是否导致 Multi-agent 系统的输出质量下降，而不是等用户投诉才发现。
 
 **差距在哪**：新手的监控是被动的（出事才查），高手的监控是主动的——在问题影响用户之前，通过指标异常发现并干预。多层指标（Agent 级 + 任务级 + 成本级 + 质量级）才能覆盖 Multi-agent 系统的复杂性。
+
+---
+
+## Q：多 Agent 系统的可观测性设计
+
+> 来源：分布式 AI 系统 SRE 面试、Agent 平台架构讨论
+
+**新手答**："每个 Agent 打日志，出问题查日志就行了。"
+
+**高手答**：
+
+1. **分布式 Trace 的核心设计**：每个用户请求生成全局唯一的 Trace ID，在 Orchestrator 和所有 Worker Agent 调用链中传递。每个 Agent 调用创建一个 Span（包含 span_id、parent_span_id、agent_name、start_time、end_time、input_hash、output_hash、token_usage），形成树状调用拓扑。Jaeger 或 OpenTelemetry 可直接可视化这个树结构。
+
+2. **跨 Agent Span 的关键字段设计**：除标准 OpenTelemetry 字段外，Agent Span 需额外记录：`model_name`（哪个 LLM）、`iteration_count`（第几次 loop）、`tool_calls`（调用了哪些工具及结果摘要）、`context_tokens`（输入 token 数）、`output_tokens`（输出 token 数）。这些字段是成本分析和性能调优的基础数据。
+
+3. **异步 Agent 的 Trace 连接**：当 Agent 通过消息队列异步通信时，Trace ID 必须随消息体传递（放在消息 header 或 metadata 字段），消费方 Agent 启动新 Span 时需将 Trace ID 作为 root 关联，否则 Trace 会断链。
+
+4. **Prompt 和 Response 的采样存储**：不对所有 Agent 调用存储完整 prompt（成本极高），而是基于采样率（如 1%）或异常触发（失败、高延迟、高 token 消耗）选择性存储完整 context，其余只存摘要。
+
+5. **实时 Trace 视图 vs 离线分析**：生产环境需要实时 Trace 视图用于快速故障排查（Jaeger UI），同时将 Span 数据异步写入数据仓库做离线聚合分析（哪个 Agent 耗时最多、哪种任务类型 token 消耗最高）。
+
+**差距在哪**：新手把可观测性等同于 print 日志，高手在系统设计阶段就引入分布式 Trace，定义跨 Agent 的 Span 规范，让每条执行链路在 Jaeger 上都有完整的树状可视化。
+
+---
+
+## Q：Multi-agent 系统的成本分摊与预算控制
+
+> 来源：AI 平台成本工程面试
+
+**新手答**："看总账单，超了就优化一下。"
+
+**高手答**：
+
+1. **Token 消耗的归因难题**：多个 Agent 并发运行时，每个 API 调用的 token 成本是可记录的，但如何归因到"哪个业务功能"、"哪个用户请求"是关键工程问题。解决方案是在每个 LLM 调用时携带 `cost_center_id`（业务线标识）和 `request_id`，在计费层按维度聚合。
+
+2. **预算层级设计**：
+   - **全局预算**：整个 Multi-agent 系统每日/每小时的 token 上限，超限触发告警或降级。
+   - **Session 预算**：单次用户请求的最大 token 预算，超限 Orchestrator 终止剩余子任务并返回部分结果。
+   - **Per-Agent 预算**：每个 Sub-agent 单次调用的 token 上限，超限强制截断 context。
+
+3. **预估 + 预分配机制**：Orchestrator 在分配子任务前，先估算每个子任务的 token 消耗（基于历史数据或启发式公式），判断是否在 Session 预算内。超预算时执行降级策略：减少并发 Agent 数量、使用更小的模型、跳过低优先级子任务。
+
+4. **实时预算消耗追踪**：维护 Session 级别的预算消耗计数器（原子操作），每个 Agent 完成后更新计数器，Orchestrator 在启动下一个 Agent 前检查剩余预算，防止超支。
+
+5. **成本异常告警**：设置 P99 成本阈值，单次 Session 超过阈值 3 倍时立即告警，对该 Session 做事后根因分析（是 context 膨胀、无限循环还是异常大的输入导致的）。
+
+**差距在哪**：新手把成本控制当事后分析，高手在系统设计阶段就建立多层预算模型和实时追踪机制，让 token 成本变成可操作的运行时约束，而不是月底账单上的惊喜。
+
+---
+
+## Q：Agent 之间的协议设计（Protocol Design）
+
+> 来源：多 Agent 系统工程设计面试
+
+**新手答**："Agent 之间用 JSON 传数据就行了。"
+
+**高手答**：
+
+1. **任务传递的标准化格式**：Agent 间的任务请求不应是随意的自然语言或无模式的 JSON，而应有明确的 schema。最小可行的任务包（Task Envelope）包含：`task_id`、`task_type`、`priority`、`deadline`、`input`（结构化）、`expected_output_schema`、`context_summary`、`parent_trace_id`。
+
+2. **结果响应的标准化**：Worker Agent 返回结果的 schema 应包含：`task_id`（与请求对应）、`status`（success/partial/failed）、`output`、`confidence_score`、`token_usage`、`error`（失败时）。缺少 `confidence_score` 和 `status` 字段会让 Orchestrator 无法做可靠的决策。
+
+3. **协议版本化**：Agent 协议必须版本化（如 `protocol_version: "1.2"`），以支持滚动升级。当协议版本不兼容时，双方应有明确的协商机制或降级行为，而不是静默解析失败。典型做法：向下兼容的字段扩展（加新可选字段），不兼容变更用版本号区分并同时部署两个版本的 Agent。
+
+4. **工具调用的协议标准**：工具调用结果的 schema 应与模型 provider 的 tool_use 格式解耦——不要直接把 Anthropic 或 OpenAI 的原始 tool_result 结构暴露给业务层，在中间加一层适配层，方便后续切换 provider 而不影响 Agent 间协议。
+
+5. **协议的文档化与测试**：Agent 间协议应像 REST API 一样有正式 schema 文档（JSON Schema 或 Pydantic model），并有对应的 contract tests（Consumer-Driven Contract Testing），确保 Orchestrator 和 Worker 的协议理解一致，避免"我以为你会传这个字段"的隐性耦合。
+
+**差距在哪**：新手把 Agent 间通信当内部实现细节，高手把它当服务间契约——有版本、有 schema、有测试，这样系统才能在多人协作开发和持续演进中保持稳定。
+
+---
+
+## Q：长时间运行任务的 Checkpoint 与恢复
+
+> 来源：大规模 Agentic 系统可靠性面试
+
+**新手答**："失败了重新跑一遍就行。"
+
+**高手答**：
+
+1. **Checkpoint 的设计粒度**：不是每步都 checkpoint（I/O 成本过高），而是在任务的天然阶段边界（Phase Boundary）做 checkpoint——例如"数据采集完成"、"分析完成"、"草稿生成完成"。每个阶段完成后将状态持久化到 DB（agent_id、phase、completed_subtasks、intermediate_results、context_summary），下次恢复从最近完成的阶段继续。
+
+2. **Checkpoint 的存储内容**：需持久化的最小状态集合：已完成子任务列表及其结果（不含 LLM 调用历史，节省空间）；当前 Phase 的上下文摘要（而非完整 context）；任务配置和参数；已消耗的资源（token 数、时间），用于恢复后的预算计算。
+
+3. **幂等性保证**：恢复后重新执行的子任务必须是幂等的——对于有副作用的操作（如发送邮件、写数据库），需要在执行前检查"是否已经做过"（用 task_id 做去重检查），防止重复执行。
+
+4. **恢复时的 Context 重建**：从 checkpoint 恢复时，不能把所有历史 context 重新加载（token 成本过高），而是用存储的 context_summary 重建工作记忆，同时注入"当前是恢复执行，已完成 X/Y 个子任务"的状态说明，帮助 Agent 定向继续。
+
+5. **Checkpoint 的 TTL 管理**：checkpoint 数据不能永久保留，设置 TTL（如 7 天），超期后清理，对应的任务如再失败则全量重跑。长任务的 TTL 需根据业务 SLA 决定。
+
+**差距在哪**：新手假设长任务可以无代价重跑，高手知道 1 小时 Multi-agent 任务中途失败重跑的代价（时间+成本）不可接受，在设计阶段就引入 Checkpoint 机制，让系统具备断点续跑能力。
+
+---
+
+## Q：Agent 的负载均衡与资源调度
+
+> 来源：大规模 Agent 平台工程面试
+
+**新手答**："有几个 Worker 就轮流给它们分任务。"
+
+**高手答**：
+
+1. **简单轮询的局限**：轮询假设每个任务的执行时间相同，但 Agent 任务的耗时差异可能高达 10-100 倍（简单格式化 vs 复杂多步推理）。轮询会导致部分 Worker 堆积长任务而其他 Worker 空闲，系统整体吞吐下降。
+
+2. **最短队列（Least Loaded）调度**：把新任务分配给当前等待队列最短（或剩余 token 预算最多）的 Worker。比轮询更合理，但需要维护每个 Worker 的实时状态，有一定协调开销。
+
+3. **任务亲和性调度**：根据任务特征（任务类型、所需工具、历史执行模式）将任务路由到最擅长的 Worker 类型。例如代码相关任务优先分配给已加载代码工具的 Worker，减少工具加载和 context 初始化开销。
+
+4. **动态扩缩容**：当任务队列深度持续高于阈值时，自动扩容 Worker 实例；队列空闲时缩容节省成本。配合 Kubernetes HPA 或自定义 Scaler 实现。扩缩容需要 Worker 是无状态的，所有状态存储在外部（DB 或 Redis）。
+
+5. **预热与缓存机制**：频繁使用的 system prompt 和工具配置可以预加载到 Worker 中（prompt cache 利用），减少首次调用的延迟。对于有 Anthropic prompt caching 的场景，保持 Worker 实例的复用率可以显著提高 cache hit rate，降低成本。
+
+**差距在哪**：新手把负载均衡当简单轮询，高手理解 Agent 任务的异构性，会设计基于任务特征的调度策略，并结合动态扩缩容和缓存机制，在成本和延迟之间找到最优平衡。
+
+---
+
+## Q：跨系统 Agent 集成（External Agent）
+
+> 来源：企业 AI 平台集成面试
+
+**新手答**："把 REST API 的文档告诉 Agent，它就会调用了。"
+
+**高手答**：
+
+1. **REST API 封装为 Agent Tool 的标准流程**：为每个外部 API endpoint 创建一个 Tool 定义，包含：`name`（简短描述性名称）、`description`（模型用来判断何时调用的自然语言描述，这是最重要的字段）、`input_schema`（JSON Schema，指定参数类型和必填项）、`execute` 函数（实际的 HTTP 调用逻辑）。description 质量直接决定模型的工具选择准确率。
+
+2. **认证与凭证管理**：外部 API 的 API Key、OAuth Token 等凭证不应硬编码在工具定义中，也不应出现在 prompt 里（防止被模型"复述"泄露）。应由 Tool 的执行层从安全凭证存储（如 Vault、AWS Secrets Manager）在运行时动态获取，对模型完全透明。
+
+3. **错误处理与重试策略**：外部 API 可能返回 4xx/5xx 错误、超时、格式不符等情况。工具执行层需要有明确的错误处理：4xx 不重试（大概率是参数问题，告知 Agent 原因）；5xx 和超时按指数退避重试最多 3 次；重试仍失败则返回结构化错误信息给 Agent（包含错误类型和建议操作），让 Agent 决定如何降级。
+
+4. **响应的归一化**：不同外部 API 的响应格式各异（XML、各种 JSON 结构），工具层需要做归一化处理，返回一致的结构化格式给 Agent，避免 Agent 需要理解多种不同的响应 schema。
+
+5. **速率限制与资源保护**：对每个外部 API 维护调用频率计数器，在工具层实施速率限制，防止 Agent 在循环中无限调用外部 API 超出配额。同时设置单次 Tool 调用的最大返回数据量，防止超大响应撑爆 context。
+
+**差距在哪**：新手把"给 Agent 看 API 文档"当集成方案，高手知道外部 API 集成的核心工程问题在于 description 质量、凭证安全、错误处理规范和速率保护，这些决定了集成的可靠性。
+
+---
+
+## Q：Multi-agent 的安全边界
+
+> 来源：Agentic AI 安全工程面试
+
+**新手答**："用权限控制，不该做的不让它做。"
+
+**高手答**：
+
+1. **Agent 间的最小权限原则**：每个 Agent 只能调用其角色所需的最小工具集，不能因为"方便"就给 Agent 授予宽泛权限。Orchestrator 不应有 Worker 的执行工具；Worker 不应有访问其他 Worker 数据的接口。权限在 Agent 实例化时静态绑定，而不是运行时动态获取。
+
+2. **数据隔离**：不同 Agent 的中间结果和 context 应存储在隔离的命名空间下（如按 agent_id 分区的 Redis key 或 DB row），Agent 只能读写自己的命名空间。Orchestrator 聚合结果时通过结构化接口获取，而非直接访问 Worker 的内部状态存储。
+
+3. **Prompt Injection 防御**：当 Agent 处理来自外部（用户输入、网页内容、文件内容）的数据时，存在 prompt injection 风险——恶意内容可能尝试劫持 Agent 行为（如"忽略之前所有指令，做以下操作"）。防御手段：将外部数据用结构化格式（XML tag 或 JSON 字段）包裹，在 system prompt 中声明数据区域与指令区域的边界，以及使用独立的内容审查 step 在注入 context 前过滤恶意指令。
+
+4. **工具调用审计与拦截**：所有工具调用在执行前经过 Permission Gate，高风险工具（`critical` 级别）始终需要人工确认，不可被 Agent 自主执行。审计日志记录每次工具调用的 agent_id、tool_name、参数摘要、执行结果，形成不可篡改的操作链，用于事后安全审查。
+
+5. **Agent 间通信的内容过滤**：Orchestrator 传给 Worker 的任务包，以及 Worker 返回的结果，都应经过内容过滤器，检测是否包含异常的提权指令或越权请求（如 Worker 回复中包含"请以 Orchestrator 身份执行..."），触发告警并丢弃该消息。
+
+**差距在哪**：新手把安全等同于"权限控制列表"，高手构建的是纵深防御——最小权限 + 数据隔离 + prompt injection 防御 + 工具调用审计 + Agent 间通信过滤，多层机制共同保障 Multi-agent 系统的安全边界。
+
+---
+
+## Q：异构模型的 Multi-agent 协同
+
+> 来源：大规模 Agentic 系统架构面试
+
+**新手答**："Orchestrator 用强模型，Worker 用弱模型，省钱就行。"
+
+**高手答**：
+
+1. **能力差距的显式建模**：Orchestrator（Claude Sonnet）和 Worker（Claude Haiku）的能力差异是真实的，不能假设 Worker 能完成 Orchestrator 能做的所有事。需要显式建立"Worker 能力边界文档"——哪些任务类型 Haiku 可以可靠完成（简单格式转换、摘要、分类），哪些需要路由给更强模型（复杂推理、代码生成、长文档分析）。
+
+2. **任务路由的模型分级**：Orchestrator 在分配任务时，根据任务复杂度动态选择模型层级，而不是所有 Worker 用同一模型。实现方式：给每个子任务打复杂度标签（low/medium/high），在 Worker 实例化时根据标签选择对应模型，同一 Worker 类型可以有 Haiku 版和 Sonnet 版。
+
+3. **弱模型的指令精度问题**：小模型（Haiku）对复杂嵌套指令的遵循精度低于大模型，Orchestrator 传给 Haiku Worker 的任务包必须更简单明确——减少歧义、拆解为最小粒度指令、提供具体的输出格式示例。面向 Haiku 的 prompt 工程比面向 Sonnet 的要更"保姆级"。
+
+4. **输出质量校验的差异化**：使用弱模型的 Worker 输出需要更严格的质量验证——格式校验、置信度评分、以及更频繁地触发 Critic Agent 复查。不能把对 Sonnet 输出的信任度直接套用到 Haiku 输出上。
+
+5. **成本与质量的动态再平衡**：在 Session 预算告急时，可以动态降级部分 Worker 的模型（Sonnet → Haiku），但需要评估哪些子任务的质量对最终结果影响最小，优先降级那些任务，保证核心推理路径仍使用足够强的模型。
+
+**差距在哪**：新手把异构模型协同当简单的"省钱选小模型"，高手理解不同模型的能力边界，设计任务-模型匹配路由，针对弱模型设计更严格的验证策略，并具备动态再平衡能力，在成本和质量之间做精细的工程权衡。
+
+---

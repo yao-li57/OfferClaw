@@ -59,3 +59,69 @@ Agent 的错误处理比普通后端复杂得多，因为 Agent Loop 是**多轮
 4. **Checkpoint 恢复**：长对话中如果中间某一步出错，不应该从头重来。Session checkpoint 让你可以从最近的成功状态恢复。
 
 **差距在哪**：try-catch 是最低级的错误处理。面试官期望看到分类、分层恢复策略和 graceful degradation 的设计思维。
+
+## Q：Agent 的权限管理（Permission Gate）怎么设计？工具调用的风险分级如何落地？
+
+> 来源：AI 安全工程师面试
+
+**新手答**："用户有权限就让 Agent 操作，没权限就拒绝"
+
+**高手答**：
+
+Agent 工具的权限管理和 API 权限管理有本质区别：Agent 可能"被说服"去做它本不该做的事（prompt injection），所以权限必须在代码层硬编码，而不能依赖模型自己判断。
+
+**风险分级**：
+```
+low      → 只读操作（搜索、查询、分析）→ 自动执行
+medium   → 有副作用但可逆（写文件、发草稿）→ 记录但不阻断
+high     → 不可逆或有外部成本（发送消息、调用付费 API）→ 需要配置规则放行
+critical → 破坏性操作（删除数据、执行系统命令）→ 必须用户实时确认
+```
+
+**核心原则**：
+- 每个 Tool 在声明时带 `riskLevel` 字段，不是运行时由 LLM 决定
+- `PermissionGate.check(toolName, riskLevel, sessionContext)` 在执行前被调用，LLM 的输出内容不参与这个决策
+- critical 工具即使 LLM 被 prompt inject 要求执行，也一定弹出人工确认
+
+**审计**：
+所有工具调用（包括被拒绝的）都写入 audit log：`{sessionId, tool, riskLevel, decision, timestamp}`，用于事后安全审查。
+
+**Rate Limiting（防滥用）**：
+高风险工具设置 session 级调用频率上限（如每 session 最多 5 次写操作），防止 Agent Loop 出 bug 时无限循环消耗资源或造成破坏。
+
+**差距在哪**：新手把工具权限等同于用户权限，高手知道权限必须在代码层硬编码，且审计+限流是兜底防护，不能依赖"模型会自己判断"。
+
+---
+
+## Q：Hook Pipeline（pre-tool / post-tool）的设计思路是什么？有哪些典型用途？
+
+> 来源：AI 工程师面试
+
+**新手答**："就是工具调用前后加个回调"
+
+**高手答**：
+
+Hook Pipeline 是 Agent 的"治理层"，让你在不修改工具本身的情况下，统一注入横切关注点（cross-cutting concerns）。
+
+**Pre-tool Hook（执行前）**：
+- **输入清洗**：检测 prompt injection 特征，过滤恶意参数
+- **参数校验**：类型检查、范围检查，不依赖 LLM 参数的合法性
+- **用户确认**：critical 风险工具弹确认对话框
+- **限流检查**：检查是否超出速率限制，超出则 veto 执行
+- 可以**修改输入**（安全地重写参数）或**中止执行**（返回 `{continue: false}`）
+
+**Post-tool Hook（执行后）**：
+- **结果截断**：工具返回 100k 字符的 HTML，post-hook 截取前 2000 字，避免污染 context
+- **敏感信息脱敏**：返回值中的 API key、密码替换为 `****`
+- **token 计数**：统计工具结果的 token 消耗，更新 context 预算
+- **结果格式化**：把原始数据转成模型更易理解的格式
+- 可以**重写结果**，修改后的内容才传给 LLM
+
+**Pipeline 执行模型**：
+```
+hooks 是有序数组，依次执行
+pre-hook 返回 {continue: false} → 中止，不调用工具
+post-hook 返回修改后的 result → 传递给下一个 post-hook
+```
+
+**差距在哪**：新手只用 hook 打日志，高手把 hook 当"治理管线"实现输入清洗、输出脱敏、流量控制，不污染工具本身的业务逻辑，也不需要每个工具自己实现这些逻辑。

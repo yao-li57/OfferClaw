@@ -116,7 +116,7 @@ export const analyzeJd: ToolDefinition = {
         keyInsights: [
           techRequired.length > 5 ? '技术栈要求广，建议聚焦 top 3 核心技能深度准备' : '技术栈聚焦，建议把核心技能吃透',
           yearsRequired && yearsRequired >= 5 ? '高年资岗位，项目深度和架构能力是重点' : '注意基础扎实度，算法和编码要熟练',
-          teamHints.includes('Agent 产品') ? '明确的 Agent 方向，OfferPilot 知识库的面试题高度相关' : '',
+          teamHints.includes('Agent 产品') ? '明确的 Agent 方向，OfferClaw 知识库的面试题高度相关' : '',
         ].filter(Boolean),
       }),
     };

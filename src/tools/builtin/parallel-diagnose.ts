@@ -53,7 +53,8 @@ export function createParallelDiagnoseTool(orchestrator: DiagnosisOrchestrator):
       });
 
       // Mirror diagnose_answer: write to memoryStore for weakness tracking
-      if (ctx.memoryStore) {
+      // Guard: skip if overallScore is 0 (all sub-agents failed)
+      if (ctx.memoryStore && result.overallScore > 0) {
         const questionKey = `题目: ${question.slice(0, 80)}`;
         ctx.memoryStore.removeByContent(questionKey);
 
